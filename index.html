@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neon Arena 3D</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; font-family: 'Arial', sans-serif; }
+  #ui { position: absolute; top: 20px; left: 20px; color: #0ff; font-size: 24px; text-shadow: 0 0 10px #0ff; z-index: 10; }
+  #instructions { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); color: #fff; text-align: center; background: rgba(0,0,0,0.5); padding: 10px 20px; border-radius: 10px; z-index: 10; }
+  #gameover { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #f0f; font-size: 48px; text-align: center; text-shadow: 0 0 20px #f0f; z-index: 20; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="ui">Score: <span id="score">0</span> | Time: <span id="time">0</span>s</div>
+<div id="instructions">WASD or Arrow Keys to move • Collect green orbs • Avoid red cubes • Click to start</div>
+<div id="gameover">
+  <div>GAME OVER</div>
+  <div style="font-size: 24px;">Score: <span id="finalscore">0</span></div>
+  <button onclick="restart()" style="margin-top:20px; padding:10px 20px; font-size:20px; background:#0ff; border:none; border-radius:5px; cursor:pointer;">Restart</button>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+let scene, camera, renderer, player, velocity = new THREE.Vector3();
+let score = 0, startTime, gameActive = false;
+const keys = {};
+const collectibles = [];
+const obstacles = [];
+
+function init() {
+  scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x000022, 0.015);
+  scene.background = new THREE.Color(0x000011);
+
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 8, 15);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  document.body.appendChild(renderer.domElement);
+
+  // Lights
+  const ambient = new THREE.AmbientLight(0x404040);
+  scene.add(ambient);
+  const pointLight = new THREE.PointLight(0x00ffff, 2, 100);
+  pointLight.position.set(0, 10, 0);
+  pointLight.castShadow = true;
+  scene.add(pointLight);
+  const dirLight = new THREE.DirectionalLight(0xff00ff, 0.5);
+  dirLight.position.set(10, 20, 10);
+  scene.add(dirLight);
+
+  // Floor
+  const floorGeo = new THREE.PlaneGeometry(100, 100);
+  const floorMat = new THREE.MeshStandardMaterial({ color: 0x111133, roughness: 0.8 });
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  scene.add(floor);
+
+  // Grid helper
+  const grid = new THREE.GridHelper(100, 50, 0x00ffff, 0x003333);
+  scene.add(grid);
+
+  // Player (glowing sphere)
+  const playerGeo = new THREE.SphereGeometry(1, 32, 32);
+  const playerMat = new THREE.MeshStandardMaterial({ 
+    color: 0x00ffff, 
+    emissive: 0x00ffff, 
+    emissiveIntensity: 0.5,
+    roughness: 0.2 
+  });
+  player = new THREE.Mesh(playerGeo, playerMat);
+  player.position.y = 1;
+  player.castShadow = true;
+  scene.add(player);
+
+  // Spawn collectibles and obstacles
+  spawnItems();
+
+  window.addEventListener('resize', onWindowResize);
+  document.addEventListener('keydown', (e) => keys[e.key.toLowerCase()] = true);
+  document.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
+  document.addEventListener('click', startGame);
+
+  animate();
+}
+
+function spawnItems() {
+  // Clear old
+  collectibles.forEach(c => scene.remove(c));
+  obstacles.forEach(o => scene.remove(o));
+  collectibles.length = 0;
+  obstacles.length = 0;
+
+  // Green collectibles
+  for (let i = 0; i < 20; i++) {
+    const geo = new THREE.SphereGeometry(0.5, 16, 16);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x00ff88, emissive: 0x00ff88, emissiveIntensity: 0.8 });
+    const orb = new THREE.Mesh(geo, mat);
+    orb.position.set(
+      (Math.random() - 0.5) * 80,
+      1,
+      (Math.random() - 0.5) * 80
+    );
+    orb.userData = { type: 'collect' };
+    scene.add(orb);
+    collectibles.push(orb);
+  }
+
+  // Red obstacles
+  for (let i = 0; i < 15; i++) {
+    const geo = new THREE.BoxGeometry(2, 2, 2);
+    const mat = new THREE.MeshStandardMaterial({ color: 0xff0044, emissive: 0xff0044, emissiveIntensity: 0.6 });
+    const box = new THREE.Mesh(geo, mat);
+    box.position.set(
+      (Math.random() - 0.5) * 80,
+      1,
+      (Math.random() - 0.5) * 80
+    );
+    box.userData = { type: 'obstacle' };
+    scene.add(box);
+    obstacles.push(box);
+  }
+}
+
+function startGame() {
+  if (!gameActive) {
+    gameActive = true;
+    score = 0;
+    startTime = Date.now();
+    document.getElementById('score').textContent = score;
+    document.getElementById('instructions').style.display = 'none';
+    document.getElementById('gameover').style.display = 'none';
+    player.position.set(0, 1, 0);
+    velocity.set(0, 0, 0);
+    spawnItems();
+  }
+}
+
+function restart() {
+  gameActive = false;
+  startGame();
+}
+
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function updatePlayer(delta) {
+  const speed = 20;
+  velocity.set(0, 0, 0);
+
+  if (keys['w'] || keys['arrowup']) velocity.z -= speed;
+  if (keys['s'] || keys['arrowdown']) velocity.z += speed;
+  if (keys['a'] || keys['arrowleft']) velocity.x -= speed;
+  if (keys['d'] || keys['arrowright']) velocity.x += speed;
+
+  // Normalize for diagonal
+  if (velocity.length() > 0) velocity.normalize().multiplyScalar(speed);
+
+  player.position.add(velocity.clone().multiplyScalar(delta));
+
+  // Bounds
+  player.position.x = Math.max(-45, Math.min(45, player.position.x));
+  player.position.z = Math.max(-45, Math.min(45, player.position.z));
+
+  // Camera follow
+  camera.position.lerp(new THREE.Vector3(player.position.x, 8, player.position.z + 15), 0.05);
+  camera.lookAt(player.position);
+}
+
+function checkCollisions() {
+  const playerPos = player.position;
+
+  // Collectibles
+  for (let i = collectibles.length - 1; i >= 0; i--) {
+    const orb = collectibles[i];
+    if (playerPos.distanceTo(orb.position) < 1.5) {
+      scene.remove(orb);
+      collectibles.splice(i, 1);
+      score += 10;
+      document.getElementById('score').textContent = score;
+    }
+  }
+
+  // Obstacles
+  for (const box of obstacles) {
+    if (playerPos.distanceTo(box.position) < 2) {
+      endGame();
+      return;
+    }
+  }
+
+  if (collectibles.length === 0) {
+    // Win condition or respawn more
+    spawnItems();
+    score += 50;
+  }
+}
+
+function endGame() {
+  gameActive = false;
+  document.getElementById('finalscore').textContent = score;
+  document.getElementById('gameover').style.display = 'block';
+  document.getElementById('instructions').style.display = 'block';
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = 0.016; // ~60fps
+
+  if (gameActive) {
+    updatePlayer(delta);
+    checkCollisions();
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    document.getElementById('time').textContent = elapsed;
+  }
+
+  // Animate orbs
+  collectibles.forEach(orb => {
+    orb.rotation.y += 0.02;
+    orb.position.y = 1 + Math.sin(Date.now() * 0.003 + orb.position.x) * 0.3;
+  });
+
+  renderer.render(scene, camera);
+}
+
+init();
+</script>
+</body>
+</html>
